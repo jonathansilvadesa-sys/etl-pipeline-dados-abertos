@@ -1,0 +1,56 @@
+name: testes
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unitarios:
+    name: Testes unitários (sem internet)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -v
+
+  integracao:
+    name: Pipeline real contra a API do IBGE
+    runs-on: ubuntu-latest
+    needs: unitarios
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Rodar o pipeline (2023 em diante)
+        run: python -m src.pipeline --inicio 2023 --exportar-csv data/export
+      - name: Conferir o resultado no DuckDB
+        run: |
+          python - <<'EOF'
+          import duckdb
+          con = duckdb.connect("data/indicadores.duckdb", read_only=True)
+          print(con.sql("""
+              SELECT f.id_indicador, i.unidade,
+                     COUNT(*)                        AS linhas,
+                     COUNT(DISTINCT cod_localidade)  AS localidades,
+                     MIN(data_referencia)            AS de,
+                     MAX(data_referencia)            AS ate,
+                     ROUND(MIN(valor), 2)            AS menor,
+                     ROUND(MAX(valor), 2)            AS maior
+              FROM fato_indicadores f JOIN dim_indicador i USING (id_indicador)
+              GROUP BY ALL ORDER BY 1
+          """))
+          print(con.sql("""
+              SELECT strftime(data_referencia, '%Y-%m') AS mes, valor AS ipca_pct
+              FROM fato_indicadores WHERE id_indicador = 'ipca'
+              ORDER BY data_referencia DESC LIMIT 3
+          """))
+          EOF
